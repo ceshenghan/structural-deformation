@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Geometric Composition Analysis – CIVL 3310 Structural Analysis</title>
+<style>
+  html,body{margin:0;height:100%;font-family:system-ui,"Segoe UI",sans-serif;font-size:13px;color:#222}
+  body{display:flex;overflow:hidden}
+  #side{width:350px;flex:none;padding:10px 12px;overflow-y:auto;background:#f6f7f9;border-right:1px solid #ddd}
+  #main{flex:1;position:relative;min-width:0}
+  canvas{display:block;background:#fff}
+  h3{margin:4px 0 2px}
+  .credit{color:#555;font-size:12px;margin:0 0 10px;padding-bottom:8px;border-bottom:1px solid #ddd;line-height:1.45}
+  .row{margin:6px 0}
+  .muted{color:#777}
+  button{margin:2px 2px 2px 0;padding:3px 8px;border:1px solid #bbb;border-radius:4px;background:#fff;cursor:pointer}
+  button.active{background:#2b6cb0;color:#fff;border-color:#2b6cb0}
+  select,input{padding:2px 4px;max-width:100%}
+  #result{background:#fff;border:1px solid #ddd;border-radius:4px;padding:8px;margin-top:8px;line-height:1.55}
+  .verdict{margin:6px 0;padding:6px;border-radius:4px;font-weight:bold}
+  .verdict.stable{background:#e6f4ea;color:#1e7e34}
+  .verdict.mechanism{background:#fff4e5;color:#b35c00}
+  .verdict.instantaneous{background:#fde8e8;color:#b91c1c}
+  #hint{position:absolute;left:10px;bottom:10px;background:rgba(255,255,255,.92);border:1px solid #ddd;border-radius:4px;padding:4px 8px;pointer-events:none;max-width:70%}
+  #stamp{position:absolute;right:10px;bottom:10px;color:#999;font-size:11px;pointer-events:none}
+  textarea{width:100%;height:120px;font-family:monospace;font-size:11px;box-sizing:border-box}
+  label{margin-right:8px;white-space:nowrap}
+  details p{margin:4px 0}
+</style>
+</head>
+<body>
+<div id="side">
+  <h3>Geometric Composition Analysis</h3>
+  <div class="credit"><b>CIVL 3310 Structural Analysis</b> · Shenghan Zhang<br>Errors and questions can be addressed to the course email.</div>
+  <div class="tools row">
+    <button data-tool="drag" class="active">Drag</button><button data-tool="node">Add node</button><button data-tool="member">Add member</button><button data-tool="release">Hinge / shear hinge</button><button data-tool="support">Support</button><button data-tool="move">Move node</button><button data-tool="delete">Delete</button>
+  </div>
+  <div class="row">Release type <select id="relType" style="max-width:300px">
+      <option value="hinge">Hinge – moment release (2 eq.)</option>
+      <option value="sliderV">Shear hinge ↕ – slides vertically (releases shear in a horizontal member) (2 eq.)</option>
+      <option value="sliderH">Shear hinge ↔ – slides horizontally (releases shear in a vertical member) (2 eq.)</option>
+      <option value="slider">Slider – custom free direction, no relative rotation (2 eq.)</option>
+      <option value="roller">Roller – restrains translation normal to the free direction only (1 eq.)</option>
+      <option value="rigid">Rigid – remove release (continuous)</option>
+    </select><br>
+    Free-slide direction <input id="relAngle" type="number" value="0" step="15" style="width:56px" disabled>° <span class="muted">from +x (0 = horizontal, 90 = vertical)</span></div>
+  <div class="row">Support <select id="supType"><option value="pin">Pin (2 eq.)</option><option value="roller">Roller (1 eq.)</option><option value="fixed">Fixed (3 eq.)</option><option value="slider">Guided / slider (2 eq.)</option></select>
+    Rotation <input id="supAngle" type="number" value="0" step="15" style="width:56px">° <span class="muted">0 = ground below, 90 = wall on the right, −90 = wall on the left</span></div>
+  <div class="row"><button id="btnReset">Reset</button><button id="btnFit">Fit view</button><button id="btnClear">Clear</button> Examples <select id="examples" style="max-width:300px"></select></div>
+  <div class="row"><label><input type="checkbox" id="chkVirt" checked>Virtual displacement</label><label><input type="checkbox" id="chkVel" checked>Velocity arrows</label><label><input type="checkbox" id="chkSnap" checked>Snap</label><label><input type="checkbox" id="chkAnim">Animate</label></div>
+  <div id="modeSel" class="row"></div>
+  <div id="result"></div>
+  <details class="row"><summary>JSON import / export</summary><textarea id="json"></textarea><button id="btnExport">Export to text box</button><button id="btnImport">Import from text box</button></details>
+  <details class="row"><summary>Help / conventions</summary>
+    <p><b>Tools.</b> <i>Hinge / shear hinge</i>: click anywhere on a member to insert the selected release there (the member is split at that point), click a node to apply it to every member end at that node, or click close to a member end to release that end only; clicking again with the same type removes it. <i>Add node</i> on a member splits it while keeping continuity; <i>Delete</i> on an intermediate node of a straight member merges the two segments again.</p>
+    <p><b>Joints.</b> All <i>rigid</i> member ends meeting at a node are merged into one rigid body (the node's <i>host</i>); every other end connects its own body to the host. <b>Hinge</b>: coincident point, free relative rotation (2 eq.). <b>Shear hinge / slider</b>: no relative rotation, relative translation only along the free direction (↕ vertical or ↔ horizontal, or custom angle) (2 eq.). <b>Roller</b>: only the translation normal to the free direction is restrained; sliding and rotation are free (1 eq.). The slot / rolling surface is fixed to the host body. Supports act on the host body.</p>
+    <p><b>Counting.</b> Every member is a rigid body (3 DOF). W = n − m, f = n − rank J (actual DOF), s = m − rank J (redundant constraints). If f &gt; 0 and s &gt; 0 a second-order test decides between an instantaneously unstable system (no finite motion) and a finite mechanism. Closed rigid loops are treated as single rigid bodies; their internal indeterminacy (3 per closed loop) is not included in s.</p>
+    <p><b>Display.</b> Each rigid body has its own colour; O<sub>I</sub>, O<sub>II</sub>, … are instantaneous centres (dashed radii to the body's nodes); red arrows are node velocities (one per attached body, so relative sliding at a shear hinge is visible); dashed members show the linearised virtual displacement. For an instantaneously unstable system dragging / animating only scales this virtual displacement – the structure itself cannot move.</p>
+  </details>
+</div>
+<div id="main"><canvas id="cv"></canvas><div id="hint"></div><div id="stamp">CIVL 3310 Structural Analysis · Shenghan Zhang</div></div>
+
+<script>
+'use strict';
+/* ====================== 1. Linear algebra: small-matrix SVD (one-sided Jacobi) ====================== */
+const LA = {
+  zeros(m, n) { const A = []; for (let i = 0; i < m; i++) A.push(new Float64Array(n)); return A; },
+  transpose(A, n) { const m = A.length, T = LA.zeros(n, m); for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) T[j][i] = A[i][j]; return T; },
+  svd(A) {   // requires m >= n; returns U (m×n), s (n, descending), V (n×n)
+    const m = A.length, n = A[0].length;
+    const U = A.map(r => Float64Array.from(r)), V = LA.zeros(n, n);
+    for (let i = 0; i < n; i++) V[i][i] = 1;
+    for (let sweep = 0; sweep < 100; sweep++) {
+      let rotated = false;
+      for (let i = 0; i < n - 1; i++) for (let j = i + 1; j < n; j++) {
+        let a = 0, b = 0, g = 0;
+        for (let k = 0; k < m; k++) { a += U[k][i] * U[k][i]; b += U[k][j] * U[k][j]; g += U[k][i] * U[k][j]; }
+        if (g === 0 || Math.abs(g) <= 1e-15 * Math.sqrt(a * b)) continue;
+        rotated = true;
+        const zeta = (b - a) / (2 * g), t = (zeta >= 0 ? 1 : -1) / (Math.abs(zeta) + Math.sqrt(1 + zeta * zeta));
+        const c = 1 / Math.sqrt(1 + t * t), s = c * t;
+        for (let k = 0; k < m; k++) { const ui = U[k][i], uj = U[k][j]; U[k][i] = c * ui - s * uj; U[k][j] = s * ui + c * uj; }
+        for (let k = 0; k < n; k++) { const vi = V[k][i], vj = V[k][j]; V[k][i] = c * vi - s * vj; V[k][j] = s * vi + c * vj; }
+      }
+      if (!rotated) break;
+    }
+    const sv = new Float64Array(n);
+    for (let j = 0; j < n; j++) { let t = 0; for (let k = 0; k < m; k++) t += U[k][j] * U[k][j]; sv[j] = Math.sqrt(t); }
+    const idx = Array.from({ length: n }, (_, j) => j).sort((p, q) => sv[q] - sv[p]);
+    const U2 = LA.zeros(m, n), V2 = LA.zeros(n, n), s2 = new Float64Array(n);
+    idx.forEach((j, c) => { s2[c] = sv[j]; for (let k = 0; k < m; k++) U2[k][c] = sv[j] > 1e-300 ? U[k][j] / sv[j] : 0; for (let k = 0; k < n; k++) V2[k][c] = V[k][j]; });
+    return { U: U2, s: s2, V: V2 };
+  },
+  analyze(A, n, relTol = 1e-9) {   // any m×n (m<n or m=0 allowed): rank, null-space basis N, pseudo-inverse data
+    const m = A.length;
+    if (n === 0) return { rank: 0, N: [], m, n, smax: 0, s: new Float64Array(0) };
+    const rows = Math.max(m, n), Ap = LA.zeros(rows, n);
+    for (let i = 0; i < m; i++) Ap[i].set(A[i]);
+    const { U, s, V } = LA.svd(Ap), smax = s[0];
+    let rank = 0; while (rank < n && s[rank] > relTol * smax) rank++;
+    const N = []; for (let c = rank; c < n; c++) { const v = new Float64Array(n); for (let k = 0; k < n; k++) v[k] = V[k][c]; N.push(v); }
+    return { U, s, V, rank, N, m, n, smax };
+  },
+  pinvApply(info, y) {   // x = A⁺ y
+    const { U, s, V, rank, m, n } = info, x = new Float64Array(n);
+    for (let c = 0; c < rank; c++) { let t = 0; for (let i = 0; i < m; i++) t += U[i][c] * y[i]; t /= s[c]; for (let k = 0; k < n; k++) x[k] += V[k][c] * t; }
+    return x;
+  },
+};
+
+/* ====================== 2. Geometric model → rigid bodies + constraints ====================== */
+const roman = k => { let s = ''; for (const [v, r] of [[10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']]) while (k >= v) { s += r; k -= v; } return s; };
+const JOINT_TYPES = new Set(['rigid', 'hinge', 'roller', 'slider']);
+const normType = t => JOINT_TYPES.has(t) ? t : 'rigid';
+const SUPPORT_LABEL = { pin: 'pin', roller: 'roller', fixed: 'fixed', slider: 'guided (slider)' };
+
+function buildSystem(model) {
+  const nodeById = new Map(model.nodes.map(nd => [nd.id, nd]));
+  const members = model.members.filter(mb => nodeById.has(mb.a) && nodeById.has(mb.b) && mb.a !== mb.b);
+  // Union-find: member ends rigidly joined at a node form one rigid body
+  const M = members.length, parent = Array.from({ length: M }, (_, i) => i);
+  const find = i => parent[i] === i ? i : (parent[i] = find(parent[i]));
+  const union = (i, j) => { i = find(i); j = find(j); if (i !== j) parent[i] = j; };
+  const endsAtNode = new Map();
+  members.forEach((mb, mi) => [['A', mb.a, mb.endA, mb.dirA], ['B', mb.b, mb.endB, mb.dirB]].forEach(([end, nid, type, dir]) => {
+    if (!endsAtNode.has(nid)) endsAtNode.set(nid, []);
+    endsAtNode.get(nid).push({ mi, end, type: normType(type), dir: Number(dir) || 0 });
+  }));
+  for (const ends of endsAtNode.values()) { const rig = ends.filter(e => e.type === 'rigid'); for (let k = 1; k < rig.length; k++) union(rig[0].mi, rig[k].mi); }
+  const bodies = [], rootToBody = new Map(), memberBody = new Array(M);
+  members.forEach((mb, mi) => {
+    const r = find(mi);
+    if (!rootToBody.has(r)) { rootToBody.set(r, bodies.length); bodies.push({ members: [], nodes: [] }); }
+    const bi = rootToBody.get(r); memberBody[mi] = bi; bodies[bi].members.push(mi);
+    for (const nid of [mb.a, mb.b]) if (!bodies[bi].nodes.includes(nid)) bodies[bi].nodes.push(nid);
+  });
+  bodies.forEach((b, bi) => {   // reference point = centroid of the body's nodes
+    let cx = 0, cy = 0; for (const nid of b.nodes) { const nd = nodeById.get(nid); cx += nd.x; cy += nd.y; }
+    b.ref = [cx / b.nodes.length, cy / b.nodes.length]; b.name = roman(bi + 1);
+  });
+  const local = (bi, nd) => [nd.x - bodies[bi].ref[0], nd.y - bodies[bi].ref[1]];
+  const memberLocal = members.map((mb, mi) => ({ bi: memberBody[mi], pa: local(memberBody[mi], nodeById.get(mb.a)), pb: local(memberBody[mi], nodeById.get(mb.b)) }));
+  // Constraints: at each node the host body (rigid group, else the first end) is connected to every other attached body
+  const cons = [], notes = [], joints = [], sups = [], nodeAttach = new Map();
+  const supportByNode = new Map(model.supports.map(s => [s.node, s]));
+  for (const [nid, ends] of endsAtNode) {
+    const nd = nodeById.get(nid), rig = ends.filter(e => e.type === 'rigid'), entries = [];
+    if (rig.length) entries.push({ bi: memberBody[rig[0].mi], type: 'rigid', dir: 0 });
+    for (const t of ['hinge', 'roller', 'slider']) for (const e of ends) if (e.type === t) entries.push({ bi: memberBody[e.mi], type: t, dir: e.dir });
+    const uniq = [], seen = new Set();
+    for (const en of entries) if (!seen.has(en.bi)) { seen.add(en.bi); uniq.push(en); }
+    nodeAttach.set(nid, uniq.map(en => ({ bi: en.bi, p: local(en.bi, nd) })));
+    const host = uniq[0].bi, ph = local(host, nd);
+    for (let k = 1; k < uniq.length; k++) {
+      const en = uniq[k], pg = local(en.bi, nd);
+      if (en.type === 'hinge') { cons.push({ type: 'hinge', b1: host, p1: ph, b2: en.bi, p2: pg, node: nid }); joints.push({ node: nid, kind: 'hinge', host, guest: en.bi, dir: 0, eq: 2 }); }
+      else {
+        const a = en.dir * Math.PI / 180, n0 = [-Math.sin(a), Math.cos(a)];   // restrained direction = free direction rotated +90°
+        cons.push({ type: 'rollerJ', bh: host, ph, bg: en.bi, pg, n0, node: nid });
+        if (en.type === 'slider') cons.push({ type: 'angleJ', bh: host, bg: en.bi, node: nid });
+        joints.push({ node: nid, kind: en.type, host, guest: en.bi, dir: en.dir, eq: en.type === 'slider' ? 2 : 1 });
+      }
+    }
+    const sp = supportByNode.get(nid);
+    if (sp) {
+      const G = [nd.x, nd.y], a = (Number(sp.angle) || 0) * Math.PI / 180, nrm = [-Math.sin(a), Math.cos(a)];
+      let eq;
+      if (sp.type === 'pin' || sp.type === 'fixed') { cons.push({ type: 'pin', b: host, p: ph, G, node: nid }); eq = 2; }
+      else { cons.push({ type: 'roller', b: host, p: ph, G, n: nrm, node: nid }); eq = 1; }
+      if (sp.type === 'fixed' || sp.type === 'slider') {
+        if (rig.length) { cons.push({ type: 'angle', b: host, node: nid }); eq++; }
+        else notes.push(`Node ${nid}: ${sp.type === 'fixed' ? 'fixed' : 'guided'} support meets only non-rigid member ends – its rotational restraint has no effect`);
+      }
+      sups.push({ node: nid, type: sp.type, angle: Number(sp.angle) || 0, eq });
+    }
+  }
+  for (const sp of model.supports) if (!endsAtNode.has(sp.node)) notes.push(`Node ${sp.node}: support is not attached to any member – ignored`);
+  const m = cons.reduce((t, c) => t + (c.type === 'pin' || c.type === 'hinge' ? 2 : 1), 0);
+  const xs = model.nodes.map(nd => nd.x), ys = model.nodes.map(nd => nd.y);
+  const diag = xs.length ? Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) : 0;
+  const q0 = new Float64Array(3 * bodies.length); bodies.forEach((b, bi) => { q0[3 * bi] = b.ref[0]; q0[3 * bi + 1] = b.ref[1]; });
+  return { bodies, cons, members, memberBody, memberLocal, nodeAttach, endsAtNode, nodeById, notes, joints, sups, n: 3 * bodies.length, m, Lchar: diag > 1e-9 ? diag : 1, q0 };
+}
+
+/* ====================== 3. Solver: Φ(q), J, second-order term, SVD classification, instant centres, dragging ====================== */
+function endWorld(q, bi, p) { const th = q[3 * bi + 2], c = Math.cos(th), s = Math.sin(th); return [q[3 * bi] + c * p[0] - s * p[1], q[3 * bi + 1] + s * p[0] + c * p[1]]; }
+function endVel(q, v, bi, p) { const th = q[3 * bi + 2], c = Math.cos(th), s = Math.sin(th), rx = c * p[0] - s * p[1], ry = s * p[0] + c * p[1]; return [v[3 * bi] - v[3 * bi + 2] * ry, v[3 * bi + 1] + v[3 * bi + 2] * rx]; }
+
+// Returns Φ(q), J(q); if v is given also B = vᵀHv (second-order term along v)
+function assemble(sys, q, v = null) {
+  const n = sys.n, Phi = [], J = [], B = [];
+  const rot = (bi, p) => { const th = q[3 * bi + 2], c = Math.cos(th), s = Math.sin(th); return [c * p[0] - s * p[1], s * p[0] + c * p[1]]; };
+  for (const c of sys.cons) {
+    if (c.type === 'pin') {
+      const rp = rot(c.b, c.p), r0 = new Float64Array(n), r1 = new Float64Array(n);
+      r0[3 * c.b] = 1; r0[3 * c.b + 2] = -rp[1]; r1[3 * c.b + 1] = 1; r1[3 * c.b + 2] = rp[0];
+      Phi.push(q[3 * c.b] + rp[0] - c.G[0], q[3 * c.b + 1] + rp[1] - c.G[1]); J.push(r0, r1);
+      const w = v ? v[3 * c.b + 2] : 0; B.push(-w * w * rp[0], -w * w * rp[1]);
+    } else if (c.type === 'hinge') {
+      const rp1 = rot(c.b1, c.p1), rp2 = rot(c.b2, c.p2), r0 = new Float64Array(n), r1 = new Float64Array(n);
+      r0[3 * c.b1] += 1; r0[3 * c.b1 + 2] += -rp1[1]; r0[3 * c.b2] -= 1; r0[3 * c.b2 + 2] += rp2[1];
+      r1[3 * c.b1 + 1] += 1; r1[3 * c.b1 + 2] += rp1[0]; r1[3 * c.b2 + 1] -= 1; r1[3 * c.b2 + 2] -= rp2[0];
+      Phi.push(q[3 * c.b1] + rp1[0] - q[3 * c.b2] - rp2[0], q[3 * c.b1 + 1] + rp1[1] - q[3 * c.b2 + 1] - rp2[1]); J.push(r0, r1);
+      const w1 = v ? v[3 * c.b1 + 2] : 0, w2 = v ? v[3 * c.b2 + 2] : 0;
+      B.push(-w1 * w1 * rp1[0] + w2 * w2 * rp2[0], -w1 * w1 * rp1[1] + w2 * w2 * rp2[1]);
+    } else if (c.type === 'roller') {            // ground roller: fixed normal
+      const rp = rot(c.b, c.p), nn = c.n, r0 = new Float64Array(n);
+      r0[3 * c.b] = nn[0]; r0[3 * c.b + 1] = nn[1]; r0[3 * c.b + 2] = -nn[0] * rp[1] + nn[1] * rp[0];
+      Phi.push(nn[0] * (q[3 * c.b] + rp[0] - c.G[0]) + nn[1] * (q[3 * c.b + 1] + rp[1] - c.G[1])); J.push(r0);
+      const w = v ? v[3 * c.b + 2] : 0; B.push(-w * w * (nn[0] * rp[0] + nn[1] * rp[1]));
+    } else if (c.type === 'angle') {             // ground rotation lock
+      const r0 = new Float64Array(n); r0[3 * c.b + 2] = 1; Phi.push(q[3 * c.b + 2]); J.push(r0); B.push(0);
+    } else if (c.type === 'rollerJ') {           // internal roller / slider: guest point stays on a line fixed in the host body, n(θh)·(Pg − Ph) = 0
+      const rh = rot(c.bh, c.ph), rg = rot(c.bg, c.pg), nn = rot(c.bh, c.n0), np = [-nn[1], nn[0]];
+      const d = [q[3 * c.bg] + rg[0] - q[3 * c.bh] - rh[0], q[3 * c.bg + 1] + rg[1] - q[3 * c.bh + 1] - rh[1]];
+      const r0 = new Float64Array(n);
+      r0[3 * c.bg] += nn[0]; r0[3 * c.bg + 1] += nn[1]; r0[3 * c.bg + 2] += -nn[0] * rg[1] + nn[1] * rg[0];
+      r0[3 * c.bh] -= nn[0]; r0[3 * c.bh + 1] -= nn[1]; r0[3 * c.bh + 2] += np[0] * d[0] + np[1] * d[1] + nn[0] * rh[1] - nn[1] * rh[0];
+      Phi.push(nn[0] * d[0] + nn[1] * d[1]); J.push(r0);
+      if (v) {
+        const wg = v[3 * c.bg + 2], wh = v[3 * c.bh + 2];
+        const dd = [v[3 * c.bg] - wg * rg[1] - v[3 * c.bh] + wh * rh[1], v[3 * c.bg + 1] + wg * rg[0] - v[3 * c.bh + 1] - wh * rh[0]];
+        B.push(-wh * wh * (nn[0] * d[0] + nn[1] * d[1]) + 2 * wh * (np[0] * dd[0] + np[1] * dd[1]) + nn[0] * (wh * wh * rh[0] - wg * wg * rg[0]) + nn[1] * (wh * wh * rh[1] - wg * wg * rg[1]));
+      } else B.push(0);
+    } else if (c.type === 'angleJ') {            // slider / shear hinge: no relative rotation
+      const r0 = new Float64Array(n); r0[3 * c.bg + 2] += 1; r0[3 * c.bh + 2] -= 1;
+      Phi.push(q[3 * c.bg + 2] - q[3 * c.bh + 2]); J.push(r0); B.push(0);
+    }
+  }
+  return { Phi: Float64Array.from(Phi), J, B: Float64Array.from(B) };
+}
+
+function cfgNorm(sys, d) { let t = 0; for (let b = 0; b < sys.bodies.length; b++) t = Math.max(t, Math.abs(d[3 * b]), Math.abs(d[3 * b + 1]), Math.abs(d[3 * b + 2]) * sys.Lchar); return t; }
+
+// Newton projection back onto the constraint manifold Φ(q)=0 (exact joint closure under finite rotations)
+function project(sys, q, maxIter = 10) {
+  q = Float64Array.from(q); const tol = 1e-10 * sys.Lchar;
+  for (let it = 0; it < maxIter; it++) {
+    const { Phi, J } = assemble(sys, q); let r = 0; for (const x of Phi) r = Math.max(r, Math.abs(x));
+    if (r < tol) return q;
+    const dq = LA.pinvApply(LA.analyze(J, sys.n), Phi);
+    for (let i = 0; i < q.length; i++) q[i] -= dq[i];
+  }
+  const { Phi } = assemble(sys, q); let r = 0; for (const x of Phi) r = Math.max(r, Math.abs(x));
+  return r < 1e-6 * sys.Lchar ? q : null;
+}
+
+function secondOrderTest(sys, q, res) {
+  const { f, modes, selfStress } = res, n = sys.n, L = sys.Lchar;
+  if (f === 1) {   // analytic: J q̈ = −vᵀHv solvable ⇔ sᵀ(vᵀHv) = 0 for every self-stress state s
+    const v = modes[0], { B } = assemble(sys, q, v), bn = Math.hypot(...B);
+    let proj = 0; for (const ss of selfStress) { let t = 0; for (let i = 0; i < B.length; i++) t += ss[i] * B[i]; proj = Math.max(proj, Math.abs(t)); }
+    const blocked = proj > 1e-7 * (bn + 1e-300);
+    return { blocked, note: blocked ? 'Second-order test: the first-order mechanism cannot be continued to second order (sᵀ·(vᵀHv) ≠ 0 for a self-stress state s) → instantaneously unstable' : 'Second-order test: the first-order mechanism continues to a finite motion' };
+  }
+  const dirs = modes.map(v => Float64Array.from(v));   // several DOF: trial steps along null-space directions, projected back
+  for (let j = 0; j < 4; j++) { const v = new Float64Array(n); modes.forEach((mo, k) => { const a = Math.cos(1.7 * (k + 1) * (j + 1)) + 0.3; for (let i = 0; i < n; i++) v[i] += a * mo[i]; }); dirs.push(v); }
+  const eps = 1e-3 * L; let free = 0, tested = 0;
+  for (const d of dirs) {
+    const dn = cfgNorm(sys, d); if (dn < 1e-14) continue; tested++;
+    const q1 = q.map((x, i) => x + eps * d[i] / dn), q2 = project(sys, q1, 25);
+    if (q2 && cfgNorm(sys, q2.map((x, i) => x - q[i])) > 0.3 * eps) free++;
+  }
+  return { blocked: free === 0, note: free === 0 ? `Numerical test: trial moves along ${tested} null-space directions were all pulled back by the constraints` : `Numerical test: ${free} of ${tested} trial directions allow finite motion` };
+}
+
+function analyzeSystem(sys, q) {
+  const { J } = assemble(sys, q), n = sys.n, m = J.length, info = LA.analyze(J, n);
+  const f = n - info.rank, s = m - info.rank;
+  const res = { n, m, W: n - m, f, s, rank: info.rank, modes: info.N, selfStress: [], notes: [...sys.notes], kind: 'stable', type: '' };
+  if (!sys.bodies.length) { res.kind = 'empty'; res.type = '(no members)'; return res; }
+  if (s > 0) res.selfStress = LA.analyze(LA.transpose(J, n), m).N;   // left null space = self-stress states
+  if (info.rank > 0 && info.s[info.rank - 1] < 1e-5 * info.smax) res.notes.push(`σ_min/σ_max = ${(info.s[info.rank - 1] / info.smax).toExponential(1)}: nearly instantaneously unstable (ill-conditioned) – the verdict is sensitive to small geometric errors`);
+  const pl = (k, w) => `${k} ${w}${k > 1 ? 's' : ''}`;
+  if (f === 0) res.type = s === 0 ? 'STABLE – statically determinate (no redundant constraints)' : `STABLE – statically indeterminate, degree ${s} (${pl(s, 'redundant constraint')})`;
+  else if (s === 0) { res.kind = 'mechanism'; res.type = `UNSTABLE – mechanism with ${pl(f, 'degree')} of freedom (finite motion)`; }
+  else {
+    const v = secondOrderTest(sys, q, res); res.kind = v.blocked ? 'instantaneous' : 'mechanism';
+    res.type = v.blocked ? `UNSTABLE – instantaneously unstable (critical form): first-order DOF ${f}, ${pl(s, 'redundant constraint')}; no finite motion` : `UNSTABLE – mechanism with ${pl(f, 'degree')} of freedom (finite motion) and ${pl(s, 'redundant constraint')}`;
+    res.notes.push(v.note);
+  }
+  return res;
+}
+
+function instantCenters(sys, q, v) {
+  const L = sys.Lchar; let scale = 0;
+  sys.bodies.forEach((b, bi) => { scale = Math.max(scale, Math.hypot(v[3 * bi], v[3 * bi + 1]) + Math.abs(v[3 * bi + 2]) * L); });
+  return sys.bodies.map((b, bi) => {
+    const vx = v[3 * bi], vy = v[3 * bi + 1], w = v[3 * bi + 2];
+    if (scale === 0) return { kind: 'fixed' };
+    if (Math.abs(w) * L > 1e-6 * scale) return { kind: 'rot', O: [q[3 * bi] - vy / w, q[3 * bi + 1] + vx / w], w };
+    if (Math.hypot(vx, vy) > 1e-6 * scale) return { kind: 'trans', dir: [vx, vy] };
+    return { kind: 'fixed' };
+  });
+}
+
+// One drag step: least-squares motion inside the null space towards the mouse, step limit, Newton projection.
+// If the projection pulls the configuration almost all the way back, the motion is only first-order → blocked.
+function dragStep(sys, q, bi, p, target, maxStep, maxAng) {
+  const { J } = assemble(sys, q), N = LA.analyze(J, sys.n).N, n = sys.n;
+  if (!N.length) return { moved: false };
+  const th = q[3 * bi + 2], c = Math.cos(th), s = Math.sin(th), rx = c * p[0] - s * p[1], ry = s * p[0] + c * p[1];
+  const P = [q[3 * bi] + rx, q[3 * bi + 1] + ry];
+  const A = [new Float64Array(N.length), new Float64Array(N.length)];   // J_P · N  (2×f)
+  N.forEach((v, k) => { A[0][k] = v[3 * bi] - v[3 * bi + 2] * ry; A[1][k] = v[3 * bi + 1] + v[3 * bi + 2] * rx; });
+  const cvec = LA.pinvApply(LA.analyze(A, N.length, 1e-6), [target[0] - P[0], target[1] - P[1]]);
+  const dq = new Float64Array(n); N.forEach((v, k) => { for (let i = 0; i < n; i++) dq[i] += cvec[k] * v[i]; });
+  const pm = Math.hypot(A[0].reduce((t, a, k) => t + a * cvec[k], 0), A[1].reduce((t, a, k) => t + a * cvec[k], 0));
+  let am = 0; for (let b = 0; b < sys.bodies.length; b++) am = Math.max(am, Math.abs(dq[3 * b + 2]));
+  if (pm < 1e-12 * sys.Lchar && am < 1e-12) return { moved: false };
+  const fac = Math.min(1, pm > 0 ? maxStep / pm : 1, am > 0 ? maxAng / am : 1);
+  const step = dq.map(x => fac * x), attempted = cfgNorm(sys, step);
+  const q2 = project(sys, q.map((x, i) => x + step[i]), 10);
+  if (!q2) return { moved: false };
+  if (cfgNorm(sys, q2.map((x, i) => x - q[i])) < 0.25 * attempted) return { moved: false, blocked: true };
+  const nd = Math.hypot(...dq); return { moved: true, q: q2, dir: dq.map(x => x / nd) };
+}
+
+/* ====================== 4. UI state & panel ====================== */
+const COLORS = ['#1f77b4', '#d62728', '#2ca02c', '#9467bd', '#ff7f0e', '#17becf', '#8c564b', '#e377c2'];
+const $ = id => document.getElementById(id), cv = $('cv'), ctx = cv.getContext('2d');
+const S = { model: { nodes: [], members: [], supports: [] }, tool: 'drag', sys: null, q: null, analysis: null, current: null,
+  pending: null, hover: null, relHover: null, drag: null, pan: null, moveNode: null, lastDir: null, prevMode: null, modeIndex: 0, virtAmp: 1,
+  view: { scale: 80, ox: 100, oy: 500 }, animT: 0 };
+const W2S = (x, y) => [S.view.ox + S.view.scale * x, S.view.oy - S.view.scale * y];
+const S2W = (sx, sy) => [(sx - S.view.ox) / S.view.scale, (S.view.oy - sy) / S.view.scale];
+const HINTS = {
+  drag: 'Press on a member and drag to move the mechanism. A stable structure will not move; an instantaneously unstable one only shows a scaled virtual displacement. Drag empty space to pan, wheel to zoom.',
+  node: 'Click on empty space to add a free node, or click on a member to insert a node there (the member is split, continuity is kept).',
+  member: 'Click two nodes in turn to connect them (clicking empty space creates a node). Keep clicking to chain members; right-click / Esc to stop.',
+  release: 'Click on a member to insert the selected hinge / shear hinge at that point. Click a node to apply it to all member ends there; click close to a member end to release that end only. Clicking again with the same type removes it.',
+  support: 'Click a node to place the selected support (click again with the same settings to remove it).',
+  move: 'Drag a node to change the geometry.',
+  delete: 'Click a node or a member to delete it (deleting an intermediate node of a straight member merges the two segments again).'
+};
+
+function rebuild() {
+  S.sys = buildSystem(S.model); S.q = Float64Array.from(S.sys.q0);
+  S.analysis = analyzeSystem(S.sys, S.q); S.current = S.analysis; S.lastDir = null; S.prevMode = null; S.virtAmp = 1; S.hover = null; S.relHover = null;
+  if (S.modeIndex >= S.analysis.f) S.modeIndex = 0;
+  renderModeSel(); updatePanel(); draw();
+}
+function reset() { if (!S.sys) return; S.q = Float64Array.from(S.sys.q0); S.current = S.analysis; S.lastDir = null; S.prevMode = null; S.virtAmp = 1; updatePanel(); draw(); }
+
+// Motion mode currently used for instant centres / virtual displacement
+function displayMode() {
+  const an = S.current; if (!an || an.f === 0 || !an.modes.length) return null;
+  let v = new Float64Array(S.sys.n);
+  if (an.f > 1 && S.lastDir) for (const mo of an.modes) { let d = 0; for (let i = 0; i < v.length; i++) d += mo[i] * S.lastDir[i]; for (let i = 0; i < v.length; i++) v[i] += d * mo[i]; }
+  let nrm = Math.hypot(...v);
+  if (nrm < 1e-12) { v = Float64Array.from(an.modes[Math.min(S.modeIndex, an.f - 1)]); nrm = Math.hypot(...v); }
+  for (let i = 0; i < v.length; i++) v[i] /= nrm;
+  const ref = S.lastDir || S.prevMode;   // sign alignment so arrows do not flip
+  if (ref) { let d = 0; for (let i = 0; i < v.length; i++) d += v[i] * ref[i]; if (d < 0) for (let i = 0; i < v.length; i++) v[i] = -v[i]; }
+  S.prevMode = v; return v;
+}
+function virtScale(mode) {   // scale factor so that the largest virtual node displacement is 0.12 L
+  let umax = 0; for (const att of S.sys.nodeAttach.values()) for (const a of att) umax = Math.max(umax, Math.hypot(...endVel(S.q, mode, a.bi, a.p)));
+  return umax > 1e-12 ? 0.12 * S.sys.Lchar / umax : 0;
+}
+function currentNodePos(nd) { const att = S.sys.nodeAttach.get(nd.id); return att ? endWorld(S.q, att[0].bi, att[0].p) : [nd.x, nd.y]; }
+function nearestNode(P) { for (const nd of S.model.nodes) { const C = currentNodePos(nd); if (Math.hypot(C[0] - P[0], C[1] - P[1]) < 1e-4 * S.sys.Lchar) return nd.id; } return null; }
+
+function renderModeSel() {
+  const ms = $('modeSel'); ms.innerHTML = ''; const f = S.analysis ? S.analysis.f : 0; if (f < 2) return;
+  ms.append('Show mode: ');
+  for (let k = 0; k < f; k++) { const b = document.createElement('button'); b.textContent = k + 1; b.className = k === S.modeIndex ? 'active' : ''; b.onclick = () => { S.modeIndex = k; S.lastDir = null; S.prevMode = null; renderModeSel(); updatePanel(); draw(); }; ms.append(b); }
+}
+function updatePanel() {
+  const an = S.analysis, sys = S.sys, el = $('result');
+  if (!sys || !sys.bodies.length) { el.innerHTML = '<i>Draw a structure or load an example.</i>'; return; }
+  const nb = sys.bodies.length, name = bi => sys.bodies[bi].name, L = [];
+  L.push(`<b>Rigid bodies</b> ${nb}　<b>Constraint equations</b> m = ${an.m}　n = 3 × ${nb} = ${an.n}`);
+  L.push(`Computational DOF W = n − m = <b>${an.W}</b>　rank(J) = ${an.rank}`);
+  L.push(`Actual DOF f = <b>${an.f}</b>　Redundant constraints s = <b>${an.s}</b>`);
+  L.push(`<div class="verdict ${an.kind}">${an.type}</div>`);
+  if (an.kind === 'instantaneous') L.push('<span class="muted">The system has an infinitesimal (first-order) mechanism but no finite motion. The dashed shape is this virtual displacement; dragging or animating only scales it – the solid structure stays put. O<sub>I</sub>, O<sub>II</sub>, … are the instantaneous centres of this virtual motion.</span>');
+  L.push('<b>Bodies</b><br>' + sys.bodies.map((b, bi) => `<span style="color:${COLORS[bi % COLORS.length]}">■</span> ${b.name}: ${b.members.map(mi => sys.members[mi].id).join(', ')} (nodes ${b.nodes.join(' ')})`).join('<br>'));
+  const conn = [];
+  for (const j of sys.joints) conn.push(`${j.node}: ${j.kind === 'hinge' ? 'hinge' : j.kind === 'roller' ? `roller, free along ${j.dir}°` : j.dir === 90 ? 'shear hinge ↕ (slides vertically)' : j.dir === 0 ? 'shear hinge ↔ (slides horizontally)' : `slider, free along ${j.dir}°`} ${name(j.host)}–${name(j.guest)} (${j.eq} eq.)`);
+  for (const s of sys.sups) conn.push(`${s.node}: ${SUPPORT_LABEL[s.type]} support${s.angle ? `, rotated ${s.angle}°` : ''} (${s.eq} eq.)`);
+  if (conn.length) L.push('<b>Connections &amp; supports</b><br>' + conn.join('<br>'));
+  const mode = displayMode();
+  if (mode) {
+    const ics = instantCenters(sys, S.q, mode);
+    L.push(`<b>Instantaneous centres</b>${S.current.kind === 'instantaneous' ? ' (first-order / virtual displacement)' : ''}${S.current.f > 1 ? ` (mode ${S.modeIndex + 1} or current drag direction)` : ''}<br>` + ics.map((ic, bi) => {
+      const b = sys.bodies[bi];
+      if (ic.kind === 'rot') { const nn = nearestNode(ic.O); return `O<sub>${b.name}</sub> = (${ic.O[0].toFixed(3)}, ${ic.O[1].toFixed(3)})${nn ? ' = node ' + nn : ''}　${ic.w > 0 ? '↺ CCW' : '↻ CW'}`; }
+      if (ic.kind === 'trans') return `O<sub>${b.name}</sub> → ∞ (translation along (${ic.dir[0].toFixed(3)}, ${ic.dir[1].toFixed(3)}))`;
+      return `Body ${b.name}: stationary`;
+    }).join('<br>'));
+  }
+  if (an.notes.length) L.push('<b>Notes</b><br>' + an.notes.join('<br>'));
+  if (S.q.some((x, i) => Math.abs(x - sys.q0[i]) > 1e-9)) L.push(`<i>Displaced configuration (after dragging). Analysis of the current configuration: ${S.current.type}</i>`);
+  el.innerHTML = L.join('<br>');
+}
+
+/* ====================== 5. Drawing ====================== */
+function drawGrid() {
+  const { scale, ox, oy } = S.view, w = cv.width, h = cv.height, step = scale >= 40 ? 0.5 : scale >= 14 ? 1 : 5;
+  ctx.lineWidth = 1;
+  const x0 = Math.floor(-ox / scale / step) * step, x1 = Math.ceil((w - ox) / scale / step) * step;
+  const y0 = Math.floor((oy - h) / scale / step) * step, y1 = Math.ceil(oy / scale / step) * step;
+  const col = v => Math.abs(v) < 1e-9 ? '#bbb' : Math.abs(v - Math.round(v)) < 1e-9 ? '#e3e3e3' : '#f3f3f3';
+  for (let x = x0; x <= x1 + 1e-9; x += step) { ctx.strokeStyle = col(x); ctx.beginPath(); ctx.moveTo(ox + x * scale, 0); ctx.lineTo(ox + x * scale, h); ctx.stroke(); }
+  for (let y = y0; y <= y1 + 1e-9; y += step) { ctx.strokeStyle = col(y); ctx.beginPath(); ctx.moveTo(0, oy - y * scale); ctx.lineTo(w, oy - y * scale); ctx.stroke(); }
+}
+function drawMembers(q, colorFn, width, alpha) {
+  ctx.globalAlpha = alpha; ctx.lineWidth = width; ctx.lineCap = 'round';
+  S.sys.members.forEach((mb, mi) => { const { bi, pa, pb } = S.sys.memberLocal[mi]; const A = W2S(...endWorld(q, bi, pa)), B = W2S(...endWorld(q, bi, pb)); ctx.strokeStyle = colorFn(bi); ctx.beginPath(); ctx.moveTo(...A); ctx.lineTo(...B); ctx.stroke(); });
+  ctx.globalAlpha = 1;
+}
+function drawVirtual(mode) {   // linearised virtual displacement, amplitude S.virtAmp
+  const sys = S.sys, q = S.q, al = S.virtAmp * virtScale(mode); if (!al) return;
+  ctx.setLineDash([6, 4]); ctx.lineWidth = 2; ctx.globalAlpha = 0.55;
+  sys.members.forEach((mb, mi) => {
+    const { bi, pa, pb } = sys.memberLocal[mi], Pa = endWorld(q, bi, pa), Pb = endWorld(q, bi, pb), ua = endVel(q, mode, bi, pa), ub = endVel(q, mode, bi, pb);
+    ctx.strokeStyle = COLORS[bi % COLORS.length];
+    const A = W2S(Pa[0] + al * ua[0], Pa[1] + al * ua[1]), B = W2S(Pb[0] + al * ub[0], Pb[1] + al * ub[1]);
+    ctx.beginPath(); ctx.moveTo(...A); ctx.lineTo(...B); ctx.stroke();
+  });
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+}
+function arrow(x0, y0, x1, y1, color, width = 1.5) {
+  const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy); if (len < 1) return; const ux = dx / len, uy = dy / len;
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = width; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 - 8 * ux + 4 * uy, y1 - 8 * uy - 4 * ux); ctx.lineTo(x1 - 8 * ux - 4 * uy, y1 - 8 * uy + 4 * ux); ctx.closePath(); ctx.fill();
+}
+function drawICs(mode) {
+  const sys = S.sys, q = S.q;
+  instantCenters(sys, q, mode).forEach((ic, bi) => {
+    const b = sys.bodies[bi], col = COLORS[bi % COLORS.length]; ctx.font = 'bold 13px sans-serif';
+    if (ic.kind === 'rot') {
+      const O = W2S(...ic.O); ctx.setLineDash([3, 5]); ctx.lineWidth = 1; ctx.strokeStyle = col; ctx.globalAlpha = 0.7;
+      for (const nid of b.nodes) { const nd = sys.nodeById.get(nid); const P = W2S(...endWorld(q, bi, [nd.x - b.ref[0], nd.y - b.ref[1]])); ctx.beginPath(); ctx.moveTo(...O); ctx.lineTo(...P); ctx.stroke(); }
+      ctx.setLineDash([]); ctx.globalAlpha = 1; ctx.fillStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(O[0], O[1], 6, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(O[0] - 10, O[1]); ctx.lineTo(O[0] + 10, O[1]); ctx.moveTo(O[0], O[1] - 10); ctx.lineTo(O[0], O[1] + 10); ctx.stroke();
+      ctx.fillStyle = col; ctx.fillText(`O_${b.name} ${ic.w > 0 ? '↺' : '↻'}`, O[0] + 11, O[1] - 8);
+    } else if (ic.kind === 'trans') {
+      const C = W2S(q[3 * bi], q[3 * bi + 1]), L = Math.hypot(...ic.dir), ux = ic.dir[0] / L, uy = -ic.dir[1] / L;
+      arrow(C[0] - 25 * ux, C[1] - 25 * uy, C[0] + 25 * ux, C[1] + 25 * uy, col, 2); arrow(C[0] + 25 * ux, C[1] + 25 * uy, C[0] - 25 * ux, C[1] - 25 * uy, col, 2);
+      ctx.fillStyle = col; ctx.fillText(`O_${b.name} → ∞ (translation)`, C[0] + 12, C[1] - 12);
+    }
+  });
+}
+function drawVelocities(mode) {   // one arrow per attached body at each node → relative sliding at shear hinges / rollers is visible
+  const sys = S.sys, q = S.q, vs = []; let umax = 0;
+  for (const att of sys.nodeAttach.values()) for (const a of att) { const P = endWorld(q, a.bi, a.p), u = endVel(q, mode, a.bi, a.p); umax = Math.max(umax, Math.hypot(...u)); vs.push({ P, u }); }
+  if (umax < 1e-12) return; const k = 55 / umax;
+  for (const { P, u } of vs) { if (Math.hypot(...u) < 1e-9 * umax) continue; const A = W2S(...P); arrow(A[0], A[1], A[0] + k * u[0], A[1] - k * u[1], '#c0392b', 1.5); }
+}
+function hatch(x0, x1, y, depth = 7) { ctx.lineWidth = 1; ctx.beginPath(); for (let x = x0; x < x1; x += 5) { ctx.moveTo(x, y); ctx.lineTo(x - 5, y + depth); } ctx.stroke(); }
+function drawSupport(sx, sy, type, angleDeg) {
+  ctx.save(); ctx.translate(sx, sy); ctx.rotate(-angleDeg * Math.PI / 180); ctx.strokeStyle = '#333'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.5;
+  const tri = gy => { ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-9, gy); ctx.lineTo(9, gy); ctx.closePath(); ctx.stroke(); };
+  const ground = gy => { ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(-18, gy); ctx.lineTo(18, gy); ctx.stroke(); hatch(-13, 20, gy); };
+  const pinDot = () => { ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(0, 0, 3.2, 0, 7); ctx.fill(); ctx.stroke(); };
+  if (type === 'pin') { tri(14); ground(14); pinDot(); }
+  else if (type === 'roller') { tri(12); ctx.beginPath(); ctx.arc(-5, 15.5, 3.5, 0, 7); ctx.stroke(); ctx.beginPath(); ctx.arc(5, 15.5, 3.5, 0, 7); ctx.stroke(); ground(19); pinDot(); }
+  else if (type === 'fixed') { ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-14, 0); ctx.lineTo(14, 0); ctx.stroke(); hatch(-9, 16, 0, 8); }
+  else if (type === 'slider') { ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(10, 0); ctx.moveTo(-6, 0); ctx.lineTo(-6, 12); ctx.moveTo(6, 0); ctx.lineTo(6, 12); ctx.stroke(); ground(12); }
+  ctx.restore();
+}
+function drawJointGlyphs(q) {   // one symbol per internal roller / shear-hinge joint, rotating with the host body
+  const sys = S.sys;
+  for (const j of sys.joints) {
+    if (j.kind !== 'roller' && j.kind !== 'slider') continue;
+    const nd = sys.nodeById.get(j.node), C = currentNodePos(nd), P = W2S(...C);
+    const a = j.dir * Math.PI / 180 + q[3 * j.host + 2], nW = [-Math.sin(a), Math.cos(a)];
+    let side = 1;   // roller glyph points towards the guest member
+    const ge = (sys.endsAtNode.get(j.node) || []).find(e => sys.memberBody[e.mi] === j.guest);
+    if (ge) { const { bi, pa, pb } = sys.memberLocal[ge.mi], O = endWorld(q, bi, ge.end === 'A' ? pb : pa); if ((O[0] - C[0]) * nW[0] + (O[1] - C[1]) * nW[1] < -1e-9) side = -1; }
+    ctx.save(); ctx.translate(P[0], P[1]); ctx.rotate(-a); ctx.scale(1, side);   // local +x = free direction, local −y = restrained direction
+    ctx.strokeStyle = '#333'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.5;
+    if (j.kind === 'roller') {
+      ctx.beginPath(); ctx.moveTo(0, -19); ctx.lineTo(-9, -7); ctx.lineTo(9, -7); ctx.closePath(); ctx.fill(); ctx.stroke();
+      for (const x of [-5, 5]) { ctx.beginPath(); ctx.arc(x, -3.5, 3.5, 0, 7); ctx.fill(); ctx.stroke(); }
+      ctx.beginPath(); ctx.moveTo(-16, 0); ctx.lineTo(16, 0); ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, -19, 3, 0, 7); ctx.fill(); ctx.stroke();
+    } else {   // two plates parallel to the sliding direction
+      ctx.fillRect(-9, -6, 18, 12);
+      for (const y of [-4, 4]) { ctx.beginPath(); ctx.moveTo(-8, y); ctx.lineTo(8, y); ctx.stroke(); for (const x of [-8, 8]) { ctx.beginPath(); ctx.arc(x, y, 2.2, 0, 7); ctx.fill(); ctx.stroke(); } }
+    }
+    ctx.restore();
+  }
+}
+function drawNodes(q) {
+  const sys = S.sys;
+  for (const nd of S.model.nodes) {
+    const P = W2S(...currentNodePos(nd)), ends = sys.endsAtNode.get(nd.id) || [];
+    const hinged = ends.filter(e => e.type === 'hinge'), rigid = ends.filter(e => e.type === 'rigid');
+    const hov = S.hover && S.hover.kind === 'node' && S.hover.id === nd.id, pend = S.pending === nd.id;
+    if (hov || pend) { ctx.fillStyle = pend ? 'rgba(43,108,176,.35)' : S.tool === 'delete' ? 'rgba(220,0,0,.3)' : 'rgba(0,0,0,.12)'; ctx.beginPath(); ctx.arc(P[0], P[1], 11, 0, 7); ctx.fill(); }
+    ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5;
+    if (hinged.length && rigid.length <= 1) {   // standard hinge symbol: hollow circle at the node
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(P[0], P[1], 5, 0, 7); ctx.fill(); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(P[0], P[1], 3, 0, 7); ctx.fill();
+      for (const e of hinged) {   // member pinned to a rigid joint: small circle offset into the hinged member
+        const { bi, pa, pb } = sys.memberLocal[e.mi], O = W2S(...endWorld(q, bi, e.end === 'A' ? pb : pa)), dx = O[0] - P[0], dy = O[1] - P[1], L = Math.hypot(dx, dy) || 1;
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(P[0] + 9 * dx / L, P[1] + 9 * dy / L, 4.5, 0, 7); ctx.fill(); ctx.stroke();
+      }
+    }
+    ctx.fillStyle = '#333'; ctx.font = '12px sans-serif'; ctx.fillText(nd.id, P[0] + 7, P[1] - 7);
+  }
+}
+function drawReleasePreview() {
+  const tg = S.relHover; if (!tg || (tg.kind !== 'split' && tg.kind !== 'end')) return;
+  ctx.font = '11px sans-serif'; ctx.fillStyle = '#2b6cb0';
+  if (tg.kind === 'split') {
+    const P = W2S(tg.x, tg.y);
+    ctx.strokeStyle = '#2b6cb0'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.arc(P[0], P[1], 9, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillText(S.tool === 'node' ? 'insert node' : 'insert ' + currentRelease().label, P[0] + 12, P[1] - 10);
+  } else {
+    const { bi, pa, pb } = S.sys.memberLocal[tg.mi], A = W2S(...endWorld(S.q, bi, pa)), B = W2S(...endWorld(S.q, bi, pb));
+    const E = tg.end === 'A' ? A : B, O = tg.end === 'A' ? B : A, L = Math.hypot(O[0] - E[0], O[1] - E[1]) || 1, ux = (O[0] - E[0]) / L, uy = (O[1] - E[1]) / L;
+    ctx.strokeStyle = 'rgba(43,108,176,.35)'; ctx.lineWidth = 12; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(E[0], E[1]); ctx.lineTo(E[0] + 26 * ux, E[1] + 26 * uy); ctx.stroke();
+    ctx.strokeStyle = '#2b6cb0'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(E[0], E[1], 10, 0, 7); ctx.stroke();
+    ctx.fillText(`${currentRelease().label}: end ${tg.node} of ${S.sys.members[tg.mi].id}`, E[0] + 13, E[1] + 16);
+  }
+}
+function draw() {
+  ctx.clearRect(0, 0, cv.width, cv.height); drawGrid();
+  const sys = S.sys; if (!sys) return;
+  const q = S.q, displaced = q.some((x, i) => Math.abs(x - sys.q0[i]) > 1e-9), mode = displayMode();
+  if (displaced) drawMembers(sys.q0, () => '#c9c9c9', 3, 1);
+  if (mode && $('chkVirt').checked) drawVirtual(mode);
+  drawMembers(q, bi => COLORS[bi % COLORS.length], 4, 1);
+  ctx.fillStyle = '#888'; ctx.font = '11px sans-serif';
+  sys.members.forEach((mb, mi) => { const { bi, pa, pb } = sys.memberLocal[mi]; const A = W2S(...endWorld(q, bi, pa)), B = W2S(...endWorld(q, bi, pb)); ctx.fillText(mb.id, (A[0] + B[0]) / 2 + 5, (A[1] + B[1]) / 2 - 5); });
+  if (S.hover && S.hover.kind === 'member' && S.tool !== 'release' && S.tool !== 'node' && sys.memberLocal[S.hover.mi]) {
+    const { bi, pa, pb } = sys.memberLocal[S.hover.mi], A = W2S(...endWorld(q, bi, pa)), B = W2S(...endWorld(q, bi, pb));
+    ctx.strokeStyle = S.tool === 'delete' ? 'rgba(220,0,0,.35)' : 'rgba(43,108,176,.3)'; ctx.lineWidth = 12; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(...A); ctx.lineTo(...B); ctx.stroke();
+  }
+  drawJointGlyphs(q);
+  for (const sp of S.model.supports) { const nd = sys.nodeById.get(sp.node); if (nd) { const [sx, sy] = W2S(...currentNodePos(nd)); drawSupport(sx, sy, sp.type, sp.angle || 0); } }
+  if (mode) drawICs(mode);
+  if (mode && $('chkVel').checked) drawVelocities(mode);
+  drawNodes(q);
+  drawReleasePreview();
+}
+function fitView() {
+  if (!S.model.nodes.length) { S.view = { scale: 80, ox: cv.width / 2 - 160, oy: cv.height / 2 + 120 }; draw(); return; }
+  const xs = S.model.nodes.map(n => n.x), ys = S.model.nodes.map(n => n.y);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys); const L = S.sys.Lchar, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const mode = displayMode();
+  if (mode) for (const ic of instantCenters(S.sys, S.q, mode)) if (ic.kind === 'rot' && Math.abs(ic.O[0] - cx) < 3 * L && Math.abs(ic.O[1] - cy) < 3 * L) { x0 = Math.min(x0, ic.O[0]); x1 = Math.max(x1, ic.O[0]); y0 = Math.min(y0, ic.O[1]); y1 = Math.max(y1, ic.O[1]); }
+  const pad = 80; S.view.scale = Math.min(400, Math.max(8, Math.min((cv.width - 2 * pad) / Math.max(x1 - x0, 1e-6), (cv.height - 2 * pad) / Math.max(y1 - y0, 1e-6))));
+  S.view.ox = cv.width / 2 - S.view.scale * (x0 + x1) / 2; S.view.oy = cv.height / 2 + S.view.scale * (y0 + y1) / 2; draw();
+}
+
+/* ====================== 6. Editing & interaction ====================== */
+function nextNodeId() { const used = new Set(S.model.nodes.map(n => n.id)); for (let i = 0; i < 26; i++) { const c = String.fromCharCode(65 + i); if (!used.has(c)) return c; } let k = 1; while (used.has('N' + k)) k++; return 'N' + k; }
+function nextMemberId() { const used = new Set(S.model.members.map(m => m.id)); let k = 1; while (used.has('m' + k)) k++; return 'm' + k; }
+function addNode(x, y) { const nd = { id: nextNodeId(), x, y }; S.model.nodes.push(nd); return nd; }
+function addMember(a, b) { if (a === b || S.model.members.some(m => (m.a === a && m.b === b) || (m.a === b && m.b === a))) return; S.model.members.push({ id: nextMemberId(), a, b, endA: 'rigid', endB: 'rigid', dirA: 0, dirB: 0 }); }
+function splitMember(mi, x, y, type, dir) {   // split member mi at (x, y); both new ends at the new node get the given release type
+  const mb = S.sys.members[mi], nd = addNode(x, y);
+  const m2 = { id: nextMemberId(), a: nd.id, b: mb.b, endA: type, endB: mb.endB, dirA: dir, dirB: mb.dirB };
+  mb.b = nd.id; mb.endB = type; mb.dirB = dir;
+  S.model.members.splice(S.model.members.indexOf(mb) + 1, 0, m2);
+  return nd;
+}
+function deleteNode(id) {
+  const model = S.model, ms = model.members.filter(m => m.a === id || m.b === id), nd = model.nodes.find(n => n.id === id);
+  if (ms.length === 2 && nd && !model.supports.some(s => s.node === id)) {   // intermediate node of a straight member → merge the two segments
+    const far = m => m.a === id ? { n: m.b, end: m.endB, dir: m.dirB } : { n: m.a, end: m.endA, dir: m.dirA };
+    const fA = far(ms[0]), fB = far(ms[1]), A = model.nodes.find(n => n.id === fA.n), B = model.nodes.find(n => n.id === fB.n);
+    if (A && B && fA.n !== fB.n) {
+      const Lab = Math.hypot(B.x - A.x, B.y - A.y), cross = (B.x - A.x) * (nd.y - A.y) - (B.y - A.y) * (nd.x - A.x);
+      if (Lab > 0 && Math.abs(cross) < 1e-6 * Lab * Lab) {
+        Object.assign(ms[0], { a: fA.n, endA: fA.end, dirA: fA.dir, b: fB.n, endB: fB.end, dirB: fB.dir });
+        model.members = model.members.filter(m => m !== ms[1]); model.nodes = model.nodes.filter(n => n.id !== id); return;
+      }
+    }
+  }
+  model.nodes = model.nodes.filter(n => n.id !== id); model.members = model.members.filter(m => m.a !== id && m.b !== id); model.supports = model.supports.filter(s => s.node !== id);
+}
+function snap(x, y) { return $('chkSnap').checked ? [Math.round(x * 2) / 2, Math.round(y * 2) / 2] : [x, y]; }
+function distToSeg(P, A, B) { const dx = B[0] - A[0], dy = B[1] - A[1], L2 = dx * dx + dy * dy || 1e-12; const t = Math.max(0, Math.min(1, ((P[0] - A[0]) * dx + (P[1] - A[1]) * dy) / L2)); return { d: Math.hypot(P[0] - A[0] - t * dx, P[1] - A[1] - t * dy), t }; }
+function hitNode(sx, sy) { let best = null, bd = 10; for (const nd of S.model.nodes) { const [px, py] = W2S(...currentNodePos(nd)); const d = Math.hypot(px - sx, py - sy); if (d < bd) { bd = d; best = nd; } } return best; }
+function hitMember(sx, sy) { let best = null, bd = 7; S.sys.members.forEach((mb, mi) => { const { bi, pa, pb } = S.sys.memberLocal[mi]; const { d, t } = distToSeg([sx, sy], W2S(...endWorld(S.q, bi, pa)), W2S(...endWorld(S.q, bi, pb))); if (d < bd) { bd = d; best = { mi, t, bi }; } }); return best; }
+
+const dirKey = k => k === 'endA' ? 'dirA' : 'dirB';
+function currentRelease() {
+  const v = $('relType').value, ang = parseFloat($('relAngle').value) || 0;
+  switch (v) {
+    case 'hinge': return { type: 'hinge', dir: 0, label: 'hinge' };
+    case 'sliderV': return { type: 'slider', dir: 90, label: 'shear hinge ↕' };
+    case 'sliderH': return { type: 'slider', dir: 0, label: 'shear hinge ↔' };
+    case 'slider': return { type: 'slider', dir: ang, label: `slider, free along ${ang}°` };
+    case 'roller': return { type: 'roller', dir: ang, label: `roller, free along ${ang}°` };
+    default: return { type: 'rigid', dir: 0, label: 'rigid (remove release)' };
+  }
+}
+// What a click at (sx, sy) would act on: a node, a member end (within endZone px of it), or a split point inside a member
+function releaseTarget(sx, sy, endZone = 26) {
+  const nd = hitNode(sx, sy); if (nd) return { kind: 'node', id: nd.id };
+  const hm = hitMember(sx, sy); if (!hm) return null;
+  const mb = S.sys.members[hm.mi], a = S.sys.nodeById.get(mb.a), b = S.sys.nodeById.get(mb.b);
+  const Lw = Math.hypot(b.x - a.x, b.y - a.y), Lpx = Lw * S.view.scale;
+  if (hm.t * Lpx < endZone) return { kind: 'end', mi: hm.mi, end: 'A', node: mb.a };
+  if ((1 - hm.t) * Lpx < endZone) return { kind: 'end', mi: hm.mi, end: 'B', node: mb.b };
+  let s = hm.t * Lw; if ($('chkSnap').checked) s = Math.round(s / 0.5) * 0.5;
+  if (s <= 1e-9 || s >= Lw - 1e-9) return { kind: 'member' };
+  return { kind: 'split', mi: hm.mi, x: a.x + s / Lw * (b.x - a.x), y: a.y + s / Lw * (b.y - a.y) };
+}
+function applyRelease(tg) {
+  const { type, dir } = currentRelease(), model = S.model;
+  if (tg.kind === 'split') { splitMember(tg.mi, tg.x, tg.y, type, dir); rebuild(); return true; }
+  const ends = [];
+  if (tg.kind === 'node') { for (const m of model.members) { if (m.a === tg.id) ends.push([m, 'endA']); if (m.b === tg.id) ends.push([m, 'endB']); } }
+  else if (tg.kind === 'end') ends.push([S.sys.members[tg.mi], tg.end === 'A' ? 'endA' : 'endB']);
+  if (!ends.length) return false;
+  const matches = (m, k) => m[k] === type && (type === 'rigid' || type === 'hinge' || (Number(m[dirKey(k)]) || 0) === dir);
+  const revert = type !== 'rigid' && ends.every(([m, k]) => matches(m, k));   // same release again → back to rigid
+  for (const [m, k] of ends) { if (revert) m[k] = 'rigid'; else { m[k] = type; m[dirKey(k)] = dir; } }
+  rebuild(); return true;
+}
+
+function doDrag(target) {
+  const { bi, p } = S.drag, sys = S.sys, L = sys.Lchar;
+  if (S.analysis.kind === 'instantaneous') {   // no finite motion: scale the first-order virtual displacement instead
+    const mode = displayMode(); if (!mode) return;
+    const P = endWorld(S.q, bi, p), u = endVel(S.q, mode, bi, p), uu = u[0] * u[0] + u[1] * u[1], al = virtScale(mode);
+    if (uu < 1e-18 || !al) return;
+    S.virtAmp = Math.max(-2.5, Math.min(2.5, ((target[0] - P[0]) * u[0] + (target[1] - P[1]) * u[1]) / (al * uu)));
+    $('hint').textContent = 'Instantaneously unstable: the solid structure cannot move – you are scaling its first-order (virtual) displacement, shown dashed.';
+    return;
+  }
+  let q = S.q, blocked = false;
+  for (let k = 0; k < 15; k++) {
+    const P = endWorld(q, bi, p), d0 = Math.hypot(target[0] - P[0], target[1] - P[1]); if (d0 < 1e-4 * L) break;
+    const r = dragStep(sys, q, bi, p, target, 0.04 * L, 0.06); if (!r.moved) { blocked = !!r.blocked; break; }
+    const P2 = endWorld(r.q, bi, p), d1 = Math.hypot(target[0] - P2[0], target[1] - P2[1]);
+    if (d1 > d0 - 1e-7 * L) break;   // no progress
+    q = r.q; S.lastDir = r.dir;
+  }
+  S.q = q; S.current = analyzeSystem(sys, q);   // null space of the current configuration → instant centres follow the motion
+  if (blocked) $('hint').textContent = 'Motion blocked: the constraints pull the system back (only a first-order motion exists at this configuration).';
+}
+function handleTool(sx, sy) {
+  const sys = S.sys, model = S.model;
+  switch (S.tool) {
+    case 'drag': { const hm = hitMember(sx, sy); if (!hm) return false; $('chkAnim').checked = false;
+      const { bi, mi, t } = hm, { pa, pb } = sys.memberLocal[mi], Pa = endWorld(S.q, bi, pa), Pb = endWorld(S.q, bi, pb);
+      const Pw = [Pa[0] + t * (Pb[0] - Pa[0]), Pa[1] + t * (Pb[1] - Pa[1])], th = S.q[3 * bi + 2], c = Math.cos(th), s = Math.sin(th), dx = Pw[0] - S.q[3 * bi], dy = Pw[1] - S.q[3 * bi + 1];
+      S.drag = { bi, p: [c * dx + s * dy, -s * dx + c * dy] }; return true; }
+    case 'node': {
+      if (hitNode(sx, sy)) return true;
+      const tg = releaseTarget(sx, sy, 0);
+      if (tg) { if (tg.kind === 'split') { splitMember(tg.mi, tg.x, tg.y, 'rigid', 0); rebuild(); } return true; }
+      const [x, y] = snap(...S2W(sx, sy)); if (!model.nodes.some(n => Math.abs(n.x - x) < 1e-9 && Math.abs(n.y - y) < 1e-9)) { addNode(x, y); rebuild(); } return true; }
+    case 'member': { const nd = hitNode(sx, sy) || addNode(...snap(...S2W(sx, sy))); if (S.pending && S.pending !== nd.id) addMember(S.pending, nd.id); S.pending = nd.id; rebuild(); return true; }
+    case 'release': { const tg = releaseTarget(sx, sy); if (!tg) return false; if (tg.kind !== 'member') applyRelease(tg); return true; }
+    case 'support': { const nd = hitNode(sx, sy); if (!nd) return false; const type = $('supType').value, angle = parseFloat($('supAngle').value) || 0, ex = model.supports.find(s => s.node === nd.id);
+      if (ex && ex.type === type && (ex.angle || 0) === angle) model.supports = model.supports.filter(s => s !== ex); else if (ex) { ex.type = type; ex.angle = angle; } else model.supports.push({ node: nd.id, type, angle });
+      rebuild(); return true; }
+    case 'move': { const nd = hitNode(sx, sy); if (!nd) return false; S.moveNode = nd; return true; }
+    case 'delete': { const nd = hitNode(sx, sy); if (nd) { deleteNode(nd.id); rebuild(); return true; } const hm = hitMember(sx, sy); if (!hm) return false; const id = sys.members[hm.mi].id; model.members = model.members.filter(m => m.id !== id); rebuild(); return true; }
+  }
+  return false;
+}
+const mousePos = e => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+cv.addEventListener('mousedown', e => { if (e.button === 2) return; const [sx, sy] = mousePos(e); if (e.button === 1 || !handleTool(sx, sy)) S.pan = { sx, sy, ox: S.view.ox, oy: S.view.oy }; });
+cv.addEventListener('mousemove', e => {
+  const [sx, sy] = mousePos(e);
+  if (S.pan) { S.view.ox = S.pan.ox + sx - S.pan.sx; S.view.oy = S.pan.oy + sy - S.pan.sy; draw(); return; }
+  if (S.drag) { doDrag(S2W(sx, sy)); updatePanel(); draw(); return; }
+  if (S.moveNode) { const [x, y] = snap(...S2W(sx, sy)); if (x !== S.moveNode.x || y !== S.moveNode.y) { S.moveNode.x = x; S.moveNode.y = y; rebuild(); } return; }
+  const nd = hitNode(sx, sy), hm = nd ? null : hitMember(sx, sy);
+  S.hover = nd ? { kind: 'node', id: nd.id } : hm ? { kind: 'member', mi: hm.mi, t: hm.t } : null;
+  S.relHover = S.tool === 'release' ? releaseTarget(sx, sy) : S.tool === 'node' ? releaseTarget(sx, sy, 0) : null;
+  cv.style.cursor = S.hover ? 'pointer' : 'default'; draw();
+});
+const endInteraction = () => { S.pan = null; S.moveNode = null; if (S.drag) { S.drag = null; S.current = analyzeSystem(S.sys, S.q); $('hint').textContent = HINTS[S.tool]; updatePanel(); draw(); } };
+cv.addEventListener('mouseup', endInteraction); cv.addEventListener('mouseleave', endInteraction);
+cv.addEventListener('contextmenu', e => { e.preventDefault(); S.pending = null; draw(); });
+cv.addEventListener('wheel', e => { e.preventDefault(); const [sx, sy] = mousePos(e), [wx, wy] = S2W(sx, sy); S.view.scale = Math.min(400, Math.max(8, S.view.scale * Math.exp(-e.deltaY * 0.001))); S.view.ox = sx - wx * S.view.scale; S.view.oy = sy + wy * S.view.scale; draw(); }, { passive: false });
+window.addEventListener('keydown', e => { if (e.key === 'Escape') { S.pending = null; S.drag = null; draw(); } });
+
+document.querySelectorAll('.tools button').forEach(btn => btn.onclick = () => {
+  S.tool = btn.dataset.tool; document.querySelectorAll('.tools button').forEach(b => b.classList.toggle('active', b === btn));
+  S.pending = null; S.relHover = null; if (S.tool !== 'drag') { $('chkAnim').checked = false; reset(); } $('hint').textContent = HINTS[S.tool]; draw();
+});
+$('relType').onchange = () => { const v = $('relType').value; $('relAngle').disabled = !(v === 'slider' || v === 'roller'); if (v === 'slider') $('relAngle').value = 90; if (v === 'roller') $('relAngle').value = 0; };
+$('btnReset').onclick = () => { $('chkAnim').checked = false; reset(); };
+$('btnFit').onclick = () => fitView();
+$('btnClear').onclick = () => { S.model = { nodes: [], members: [], supports: [] }; S.pending = null; rebuild(); };
+$('btnExport').onclick = () => { $('json').value = JSON.stringify(S.model, null, 1); };
+$('btnImport').onclick = () => { try { const m = JSON.parse($('json').value); if (!m.nodes || !m.members) throw new Error('missing nodes / members'); S.model = { nodes: m.nodes, members: m.members.map(x => ({ endA: 'rigid', endB: 'rigid', dirA: 0, dirB: 0, ...x })), supports: m.supports || [] }; rebuild(); fitView(); } catch (e) { alert('Import failed: ' + e.message); } };
+$('chkVirt').onchange = $('chkVel').onchange = () => draw();
+$('chkAnim').onchange = () => { if (!$('chkAnim').checked) reset(); else S.animT = 0; };
+
+// Animation: mechanisms move along the selected mode (projected onto the constraint manifold);
+// instantaneously unstable systems only oscillate their first-order virtual displacement.
+function loop() {
+  requestAnimationFrame(loop);
+  if (!$('chkAnim').checked || S.drag || !S.sys || !S.analysis || S.analysis.f === 0) return;
+  const an = S.analysis; S.animT += 0.03;
+  if (an.kind === 'instantaneous') { S.virtAmp = 1.5 * Math.sin(S.animT); draw(); return; }
+  const v0 = an.modes[Math.min(S.modeIndex, an.f - 1)]; let vmax = 0;
+  for (const att of S.sys.nodeAttach.values()) { const u = endVel(S.sys.q0, v0, att[0].bi, att[0].p); vmax = Math.max(vmax, Math.hypot(...u)); }
+  if (vmax < 1e-12) return;
+  const a = 0.15 * S.sys.Lchar / vmax * Math.sin(S.animT);
+  const q2 = project(S.sys, S.sys.q0.map((x, i) => x + a * v0[i]), 12);
+  if (q2) { S.q = q2; S.current = analyzeSystem(S.sys, S.q); updatePanel(); draw(); }
+}
+
+/* ====================== 7. Examples ====================== */
+const N = (id, x, y) => ({ id, x, y }), Mb = (id, a, b, endA = 'rigid', endB = 'rigid', dirA = 0, dirB = 0) => ({ id, a, b, endA, endB, dirA, dirB });
+const PIN = (node, angle = 0) => ({ node, type: 'pin', angle }), ROL = (node, angle = 0) => ({ node, type: 'roller', angle });
+const EX = [
+  { name: 'Beam ABCDE with internal hinge at C – A pin, B & D rollers (determinate Gerber beam)', model: { nodes: [N('A', 0, 0), N('B', 15, 0), N('C', 20, 0), N('D', 40, 0), N('E', 55, 0)], members: [Mb('m1', 'A', 'B'), Mb('m2', 'B', 'C', 'rigid', 'hinge'), Mb('m3', 'C', 'D', 'hinge', 'rigid'), Mb('m4', 'D', 'E')], supports: [PIN('A'), ROL('B'), ROL('D')] } },
+  { name: 'Frame ABFCDE with hinge at C – A & E pins (determinate three-hinged frame)', model: { nodes: [N('A', 0, 0), N('B', 0, 5), N('F', 2, 5), N('C', 5, 5), N('D', 7, 5), N('E', 7, 2)], members: [Mb('m1', 'A', 'B'), Mb('m2', 'B', 'F'), Mb('m3', 'F', 'C', 'rigid', 'hinge'), Mb('m4', 'C', 'D', 'hinge', 'rigid'), Mb('m5', 'D', 'E')], supports: [PIN('A'), PIN('E')] } },
+  { name: 'Frame with shear hinge ↕ at C – A & B pins at the same level (instantaneously unstable)', model: { nodes: [N('A', 0, 0), N('D', 0, 3), N('C', 2, 3), N('E', 4, 3), N('B', 4, 0)], members: [Mb('m1', 'A', 'D'), Mb('m2', 'D', 'C'), Mb('m3', 'C', 'E', 'slider', 'rigid', 90, 0), Mb('m4', 'E', 'B')], supports: [PIN('A'), PIN('B')] } },
+  { name: 'Frame with shear hinge ↕ at C – right support raised (determinate)', model: { nodes: [N('A', 0, 0), N('D', 0, 3), N('C', 2, 3), N('E', 4, 3), N('B', 4, 1)], members: [Mb('m1', 'A', 'D'), Mb('m2', 'D', 'C'), Mb('m3', 'C', 'E', 'slider', 'rigid', 90, 0), Mb('m4', 'E', 'B')], supports: [PIN('A'), PIN('B')] } },
+  { name: 'Frame with shear hinge ↔ at C (axial release of the beam) – A & B pins (determinate)', model: { nodes: [N('A', 0, 0), N('D', 0, 3), N('C', 2, 3), N('E', 4, 3), N('B', 4, 0)], members: [Mb('m1', 'A', 'D'), Mb('m2', 'D', 'C'), Mb('m3', 'C', 'E', 'slider', 'rigid', 0, 0), Mb('m4', 'E', 'B')], supports: [PIN('A'), PIN('B')] } },
+  { name: 'Stepped beams on an internal roller – vertical restraint only (mechanism, 2 DOF)', model: { nodes: [N('A', 0, 0), N('D', 0, 3), N('C', 2, 3), N('F', 2, 3.25), N('E', 4, 3.25), N('B', 4, 0)], members: [Mb('m1', 'A', 'D'), Mb('m2', 'D', 'C'), Mb('m3', 'C', 'F', 'roller', 'rigid', 0, 0), Mb('m4', 'F', 'E'), Mb('m5', 'E', 'B')], supports: [PIN('A'), ROL('B')] } },
+  { name: 'Frame with hinge at C and roller at B (mechanism, 1 DOF)', model: { nodes: [N('A', 0, 0), N('D', 0, 3), N('C', 2, 3), N('E', 4, 3), N('B', 4, 0)], members: [Mb('m1', 'A', 'D'), Mb('m2', 'D', 'C', 'rigid', 'hinge'), Mb('m3', 'C', 'E', 'hinge', 'rigid'), Mb('m4', 'E', 'B')], supports: [PIN('A'), ROL('B')] } },
+  { name: 'Rigid frame on two pins (indeterminate, degree 1)', model: { nodes: [N('A', 0, 0), N('D', 0, 3), N('C', 2, 3), N('E', 4, 3), N('B', 4, 0)], members: [Mb('m1', 'A', 'D'), Mb('m2', 'D', 'C'), Mb('m3', 'C', 'E'), Mb('m4', 'E', 'B')], supports: [PIN('A'), PIN('B')] } },
+  { name: 'Three collinear hinges (instantaneously unstable)', model: { nodes: [N('A', 0, 0), N('C', 2, 0), N('B', 4, 0)], members: [Mb('m1', 'A', 'C', 'rigid', 'hinge'), Mb('m2', 'C', 'B', 'hinge', 'rigid')], supports: [PIN('A'), PIN('B')] } },
+  { name: 'Three parallel links, unequal lengths (instantaneously unstable)', model: { nodes: [N('A', 0, 0), N('B', 2, 0.5), N('C', 4, 0), N('D', 0, 2), N('E', 2, 2), N('F', 4, 2)], members: [Mb('m1', 'A', 'D', 'hinge', 'hinge'), Mb('m2', 'B', 'E', 'hinge', 'hinge'), Mb('m3', 'C', 'F', 'hinge', 'hinge'), Mb('m4', 'D', 'E'), Mb('m5', 'E', 'F')], supports: [PIN('A'), PIN('B'), PIN('C')] } },
+  { name: 'Three parallel links, equal lengths (mechanism + 1 redundant)', model: { nodes: [N('A', 0, 0), N('B', 2, 0), N('C', 4, 0), N('D', 0, 2), N('E', 2, 2), N('F', 4, 2)], members: [Mb('m1', 'A', 'D', 'hinge', 'hinge'), Mb('m2', 'B', 'E', 'hinge', 'hinge'), Mb('m3', 'C', 'F', 'hinge', 'hinge'), Mb('m4', 'D', 'E'), Mb('m5', 'E', 'F')], supports: [PIN('A'), PIN('B'), PIN('C')] } },
+  { name: 'Double pendulum (2 DOF)', model: { nodes: [N('A', 0, 3), N('D', 1.5, 1.5), N('E', 3, 0)], members: [Mb('m1', 'A', 'D', 'hinge', 'hinge'), Mb('m2', 'D', 'E', 'hinge', 'rigid')], supports: [PIN('A')] } },
+  { name: 'Cantilever + guided support (determinate)', model: { nodes: [N('A', 0, 0), N('B', 4, 0)], members: [Mb('m1', 'A', 'B')], supports: [{ node: 'A', type: 'fixed', angle: -90 }, { node: 'B', type: 'slider', angle: 90 }] } },
+];
+EX.forEach((ex, i) => { const o = document.createElement('option'); o.value = i; o.textContent = ex.name; $('examples').append(o); });
+$('examples').onchange = e => loadExample(+e.target.value);
+function loadExample(i) { S.model = JSON.parse(JSON.stringify(EX[i].model)); S.modeIndex = 0; $('chkAnim').checked = false; $('examples').value = String(i); rebuild(); fitView(); }
+
+/* ====================== 8. Start ====================== */
+function resize() { cv.width = $('main').clientWidth; cv.height = $('main').clientHeight; draw(); }
+window.addEventListener('resize', resize);
+resize(); loadExample(0); $('hint').textContent = HINTS.drag; requestAnimationFrame(loop);
+</script>
+</body>
+</html>
